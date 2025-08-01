@@ -1,0 +1,268 @@
+package demo.backed.service;
+
+import demo.backed.entity.User;
+import demo.backed.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.keycloak.admin.client.Keycloak;
+import org.keycloak.admin.client.resource.RealmResource;
+import org.keycloak.admin.client.resource.UserResource;
+import org.keycloak.admin.client.resource.UsersResource;
+import org.keycloak.representations.idm.CredentialRepresentation;
+import org.keycloak.representations.idm.RoleRepresentation;
+import org.keycloak.representations.idm.UserRepresentation;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.annotation.Profile;
+import org.springframework.context.event.EventListener;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.net.URI;
+import java.time.LocalDateTime;
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Keycloak用户同步服务
+ * 负责本地用户和Keycloak用户的双向同步
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+@Profile("keycloak-sync")  // 暂时禁用
+public class KeycloakUserSyncService {
+    
+    private final UserRepository userRepository;
+    private final Keycloak keycloakAdmin;
+    
+    @Value("${keycloak.realm}")
+    private String realmName;
+    
+    @Value("${app.keycloak.sync-users:true}")
+    private boolean syncEnabled;
+    
+    @Value("${app.keycloak.default-password:Hkex@2024}")
+    private String defaultPassword;
+    
+    /**
+     * 应用启动后同步现有用户到Keycloak
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Transactional
+    public void syncExistingUsersToKeycloak() {
+        if (!syncEnabled) {
+            log.info("用户同步已禁用");
+            return;
+        }
+        
+        log.info("开始同步本地用户到Keycloak...");
+        
+        try {
+            RealmResource realm = keycloakAdmin.realm(realmName);
+            UsersResource usersResource = realm.users();
+            
+            // 获取所有在职用户
+            List<User> activeUsers = userRepository.findByStatus("在职");
+            log.info("找到 {} 个需要同步的用户", activeUsers.size());
+            
+            int successCount = 0;
+            int skipCount = 0;
+            int failCount = 0;
+            
+            for (User user : activeUsers) {
+                try {
+                    // 检查用户是否已经存在于Keycloak
+                    List<UserRepresentation> existingUsers = usersResource.search(user.getEmail(), true);
+                    
+                    if (!existingUsers.isEmpty()) {
+                        // 用户已存在，更新本地的Keycloak ID
+                        String keycloakId = existingUsers.get(0).getId();
+                        user.setKeycloakId(keycloakId);
+                        userRepository.save(user);
+                        log.debug("用户 {} 已存在于Keycloak，跳过", user.getEmail());
+                        skipCount++;
+                        continue;
+                    }
+                    
+                    // 创建新的Keycloak用户
+                    UserRepresentation keycloakUser = createKeycloakUser(user);
+                    
+                    try {
+                        // 创建用户
+                        usersResource.create(keycloakUser);
+                        
+                        // 重新搜索用户获取ID
+                        List<UserRepresentation> createdUsers = usersResource.search(user.getEmail(), true);
+                        if (!createdUsers.isEmpty()) {
+                            String userId = createdUsers.get(0).getId();
+                            
+                            // 设置密码
+                            setUserPassword(realm, userId);
+                            
+                            // 分配角色
+                            assignUserRoles(realm, userId, user.getUserType());
+                            
+                            // 更新本地用户的Keycloak ID
+                            user.setKeycloakId(userId);
+                            userRepository.save(user);
+                            
+                            log.info("成功同步用户: {} ({})", user.getUserName(), user.getEmail());
+                            successCount++;
+                        } else {
+                            log.error("创建Keycloak用户失败: {} - 无法获取用户ID", user.getEmail());
+                            failCount++;
+                        }
+                    } catch (Exception ex) {
+                        log.error("创建Keycloak用户失败: {} - 错误: {}", user.getEmail(), ex.getMessage());
+                        failCount++;
+                    }
+                    
+                } catch (Exception e) {
+                    log.error("同步用户 {} 时发生错误: {}", user.getEmail(), e.getMessage());
+                    failCount++;
+                }
+            }
+            
+            log.info("用户同步完成: 成功={}, 跳过={}, 失败={}", successCount, skipCount, failCount);
+            
+        } catch (Exception e) {
+            log.error("用户同步过程中发生错误", e);
+        }
+    }
+    
+    /**
+     * 当Keycloak用户登录时同步或更新本地用户
+     */
+    @Transactional
+    public User syncKeycloakUserToLocal(Jwt jwt) {
+        String keycloakId = jwt.getSubject();
+        String email = jwt.getClaimAsString("email");
+        String username = jwt.getClaimAsString("preferred_username");
+        String name = jwt.getClaimAsString("name");
+        
+        // 自定义属性
+        String employeeId = jwt.getClaimAsString("employee_id");
+        String department = jwt.getClaimAsString("department");
+        String userType = jwt.getClaimAsString("user_type");
+        
+        // 查找或创建本地用户
+        User user = userRepository.findByKeycloakId(keycloakId)
+                .orElseGet(() -> userRepository.findByEmail(email)
+                        .orElseGet(() -> {
+                            User newUser = new User();
+                            newUser.setKeycloakId(keycloakId);
+                            newUser.setEmail(email);
+                            newUser.setCreatedTime(LocalDateTime.now());
+                            return newUser;
+                        }));
+        
+        // 更新用户信息
+        user.setEmployeeId(employeeId != null ? employeeId : user.getEmployeeId());
+        user.setUserName(name != null ? name : username);
+        user.setDepartment(department != null ? department : user.getDepartment());
+        user.setUserType(userType != null ? userType : determineUserType(jwt));
+        user.setLastLoginTime(LocalDateTime.now());
+        user.setUpdatedTime(LocalDateTime.now());
+        
+        // 如果用户之前没有Keycloak ID，更新它
+        if (user.getKeycloakId() == null) {
+            user.setKeycloakId(keycloakId);
+        }
+        
+        return userRepository.save(user);
+    }
+    
+    /**
+     * 创建Keycloak用户表示
+     */
+    private UserRepresentation createKeycloakUser(User user) {
+        UserRepresentation keycloakUser = new UserRepresentation();
+        keycloakUser.setUsername(user.getEmail());
+        keycloakUser.setEmail(user.getEmail());
+        keycloakUser.setEmailVerified(true);
+        keycloakUser.setEnabled(true);
+        
+        // 设置名称
+        if (user.getUserName() != null) {
+            keycloakUser.setFirstName(user.getUserName());
+        }
+        
+        // 设置自定义属性
+        Map<String, List<String>> attributes = new HashMap<>();
+        attributes.put("employee_id", Collections.singletonList(user.getEmployeeId()));
+        attributes.put("department", Collections.singletonList(user.getDepartment()));
+        attributes.put("user_type", Collections.singletonList(user.getUserType()));
+        attributes.put("position", Collections.singletonList(user.getPosition()));
+        keycloakUser.setAttributes(attributes);
+        
+        return keycloakUser;
+    }
+    
+    /**
+     * 设置用户密码
+     */
+    private void setUserPassword(RealmResource realm, String userId) {
+        CredentialRepresentation credential = new CredentialRepresentation();
+        credential.setType(CredentialRepresentation.PASSWORD);
+        credential.setValue(defaultPassword);
+        credential.setTemporary(true); // 首次登录需要修改密码
+        
+        UserResource userResource = realm.users().get(userId);
+        userResource.resetPassword(credential);
+    }
+    
+    /**
+     * 分配用户角色
+     */
+    private void assignUserRoles(RealmResource realm, String userId, String userType) {
+        UserResource userResource = realm.users().get(userId);
+        
+        List<RoleRepresentation> rolesToAdd = new ArrayList<>();
+        
+        // 所有用户都有基础角色
+        RoleRepresentation userRole = realm.roles().get("hkex-user").toRepresentation();
+        if (userRole != null) {
+            rolesToAdd.add(userRole);
+        }
+        
+        // 主管有额外角色
+        if ("主管".equals(userType)) {
+            RoleRepresentation managerRole = realm.roles().get("hkex-manager").toRepresentation();
+            if (managerRole != null) {
+                rolesToAdd.add(managerRole);
+            }
+        }
+        
+        if (!rolesToAdd.isEmpty()) {
+            userResource.roles().realmLevel().add(rolesToAdd);
+        }
+    }
+    
+    /**
+     * 从Response中获取创建的资源ID (已弃用，使用搜索方式获取用户ID)
+     */
+    // private String getCreatedId(Response response) {
+    //     URI location = response.getLocation();
+    //     if (location != null) {
+    //         String path = location.getPath();
+    //         return path.substring(path.lastIndexOf('/') + 1);
+    //     }
+    //     return null;
+    // }
+    
+    /**
+     * 根据JWT中的角色判断用户类型
+     */
+    private String determineUserType(Jwt jwt) {
+        Map<String, Object> realmAccess = jwt.getClaimAsMap("realm_access");
+        if (realmAccess != null) {
+            List<String> roles = (List<String>) realmAccess.get("roles");
+            if (roles != null && roles.contains("hkex-manager")) {
+                return "主管";
+            }
+        }
+        return "员工";
+    }
+} 

@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             xmlns:flowable="http://flowable.org/bpmn"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC"
+             xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI"
+             typeLanguage="http://www.w3.org/2001/XMLSchema"
+             expressionLanguage="http://www.w3.org/1999/XPath"
+             targetNamespace="http://hkex.com/poc/workflow">
+             
+  <process id="expenseApproval" name="费用审批流程" isExecutable="true">
+    
+    <!-- 开始事件 -->
+    <startEvent id="start" name="申请发起"/>
+    
+    <!-- 直属主管审批（第一步） -->
+    <userTask id="manager" name="直属主管审批" flowable:assignee="${managerId}">
+      <documentation>直属主管审批费用申请</documentation>
+    </userTask>
+    
+    <sequenceFlow id="flow1" sourceRef="start" targetRef="manager"/>
+    
+    <!-- 财务部审批 -->
+    <userTask id="finance" name="财务部审批" flowable:assignee="${financeManagerId}">
+      <documentation>财务部审批费用申请</documentation>
+    </userTask>
+    
+    <sequenceFlow id="flow2" sourceRef="manager" targetRef="finance"/>
+    
+    <!-- 合规部审批 -->
+    <userTask id="compliance" name="合规部审批" flowable:assignee="${complianceManagerId}">
+      <documentation>合规部审批费用申请</documentation>
+    </userTask>
+    
+    <sequenceFlow id="flow3" sourceRef="finance" targetRef="compliance"/>
+    
+    <!-- Functional Head审批 -->
+    <userTask id="functional" name="职能负责人审批" flowable:assignee="${functionalHeadId}">
+      <documentation>职能负责人审批费用申请</documentation>
+    </userTask>
+    
+    <sequenceFlow id="flow4" sourceRef="compliance" targetRef="functional"/>
+    
+    <!-- 排他网关 - 判断金额 -->
+    <exclusiveGateway id="amountGateway" name="金额判断"/>
+    
+    <sequenceFlow id="flow5" sourceRef="functional" targetRef="amountGateway"/>
+    
+    <!-- COO/CEO审批 -->
+    <userTask id="executive" name="高管审批" flowable:assignee="${executiveId}">
+      <documentation>高管审批大额费用申请</documentation>
+    </userTask>
+    
+    <!-- 金额大于50000需要高管审批 -->
+    <sequenceFlow id="flowToExecutive" sourceRef="amountGateway" targetRef="executive">
+      <conditionExpression xsi:type="tFormalExpression">${amount &gt; 50000}</conditionExpression>
+    </sequenceFlow>
+    
+    <!-- 结束事件 -->
+    <endEvent id="end" name="审批完成"/>
+    
+    <!-- 金额小于等于50000直接结束 -->
+    <sequenceFlow id="flowToEnd1" sourceRef="amountGateway" targetRef="end">
+      <conditionExpression xsi:type="tFormalExpression">${amount &lt;= 50000}</conditionExpression>
+    </sequenceFlow>
+    
+    <sequenceFlow id="flowToEnd2" sourceRef="executive" targetRef="end"/>
+    
+  </process>
+  
+  <!-- BPMN图形定义 -->
+  <bpmndi:BPMNDiagram id="BPMNDiagram_expenseApproval">
+    <bpmndi:BPMNPlane id="BPMNPlane_expenseApproval" bpmnElement="expenseApproval">
+      <!-- 开始事件 -->
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <omgdc:Bounds x="80" y="180" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds x="73" y="223" width="50" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      
+      <!-- 直属主管审批 -->
+      <bpmndi:BPMNShape id="manager_di" bpmnElement="manager">
+        <omgdc:Bounds x="180" y="158" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      
+      <!-- 财务部审批 -->
+      <bpmndi:BPMNShape id="finance_di" bpmnElement="finance">
+        <omgdc:Bounds x="330" y="158" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      
+      <!-- 合规部审批 -->
+      <bpmndi:BPMNShape id="compliance_di" bpmnElement="compliance">
+        <omgdc:Bounds x="480" y="158" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      
+      <!-- 职能负责人审批 -->
+      <bpmndi:BPMNShape id="functional_di" bpmnElement="functional">
+        <omgdc:Bounds x="630" y="158" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      
+      <!-- 金额判断网关 -->
+      <bpmndi:BPMNShape id="amountGateway_di" bpmnElement="amountGateway">
+        <omgdc:Bounds x="780" y="173" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds x="778" y="230" width="55" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      
+      <!-- 高管审批 -->
+      <bpmndi:BPMNShape id="executive_di" bpmnElement="executive">
+        <omgdc:Bounds x="880" y="90" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      
+      <!-- 结束事件 -->
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <omgdc:Bounds x="1030" y="180" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds x="1023" y="223" width="50" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      
+      <!-- 连线 -->
+      <bpmndi:BPMNEdge id="flow1_di" bpmnElement="flow1">
+        <omgdi:waypoint x="116" y="198" />
+        <omgdi:waypoint x="180" y="198" />
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flow2_di" bpmnElement="flow2">
+        <omgdi:waypoint x="280" y="198" />
+        <omgdi:waypoint x="330" y="198" />
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flow3_di" bpmnElement="flow3">
+        <omgdi:waypoint x="430" y="198" />
+        <omgdi:waypoint x="480" y="198" />
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flow4_di" bpmnElement="flow4">
+        <omgdi:waypoint x="580" y="198" />
+        <omgdi:waypoint x="630" y="198" />
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flow5_di" bpmnElement="flow5">
+        <omgdi:waypoint x="730" y="198" />
+        <omgdi:waypoint x="780" y="198" />
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flowToExecutive_di" bpmnElement="flowToExecutive">
+        <omgdi:waypoint x="805" y="173" />
+        <omgdi:waypoint x="805" y="130" />
+        <omgdi:waypoint x="880" y="130" />
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds x="810" y="140" width="60" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flowToEnd1_di" bpmnElement="flowToEnd1">
+        <omgdi:waypoint x="830" y="198" />
+        <omgdi:waypoint x="1030" y="198" />
+        <bpmndi:BPMNLabel>
+          <omgdc:Bounds x="900" y="180" width="70" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="flowToEnd2_di" bpmnElement="flowToEnd2">
+        <omgdi:waypoint x="980" y="130" />
+        <omgdi:waypoint x="1048" y="130" />
+        <omgdi:waypoint x="1048" y="180" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  
+</definitions> 
